@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -238,10 +239,24 @@ func runTaskHandler() http.HandlerFunc {
 	}
 }
 
-// POST /tasks/{id}/stop — 停止正在运行的 execution
+// POST /tasks/{id}/stop — 停止 task 下正在运行的 execution
 func stopTaskHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		execID := chi.URLParam(r, "id")
+		taskID := chi.URLParam(r, "id")
+		// 找这个 task 下状态为 running 的最新 execution
+		var execID string
+		err := db.DB.QueryRow(
+			`SELECT id FROM executions WHERE task_id=? AND status='running' ORDER BY start_time DESC LIMIT 1`,
+			taskID,
+		).Scan(&execID)
+		if err == sql.ErrNoRows {
+			http.Error(w, `{"error":"no running execution found"}`, http.StatusNotFound)
+			return
+		}
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+			return
+		}
 		if err := db.StopExecution(execID); err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
 			return

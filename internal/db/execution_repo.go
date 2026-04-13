@@ -165,8 +165,8 @@ func UpdateExecutionStatus(id, status, workerID string) error {
 	return err
 }
 
-// ClaimTask atomically claims a pending execution for a worker using row lock.
-// Returns the claimed execution or nil if none available.
+// ClaimTask atomically claims a pending execution for a worker.
+// Uses SELECT ... FOR UPDATE SKIP LOCKED for MySQL-safe row locking.
 func ClaimTask(workerID string, concurrent int) (*models.Execution, error) {
 	tx, err := DB.Begin()
 	if err != nil {
@@ -178,28 +178,30 @@ func ClaimTask(workerID string, concurrent int) (*models.Execution, error) {
 		}
 	}()
 
-	// Lock a pending execution whose task is enabled.
+	// Step 1: Find and lock a pending execution (SKIP LOCKED avoids contention)
 	var execID string
 	err = tx.QueryRow(
-		`UPDATE executions
-		 SET status='running', worker_id=?, start_time=NOW()
-		 WHERE id = (
-		     SELECT id FROM (
-		         SELECT e.id FROM executions e
-		         INNER JOIN tasks t ON e.task_id = t.id
-		         WHERE e.status='pending' AND t.enabled=1
-		         ORDER BY e.start_time ASC
-		         LIMIT 1
-		     ) AS t2
-		 )
-		 AND status='pending'
-		 RETURNING id`,
-		workerID,
+		`SELECT e.id FROM executions e
+		 INNER JOIN tasks t ON e.task_id = t.id
+		 WHERE e.status='pending' AND t.enabled=1
+		 ORDER BY e.start_time ASC
+		 LIMIT 1
+		 FOR UPDATE SKIP LOCKED`,
 	).Scan(&execID)
 	if err == sql.ErrNoRows {
 		tx.Rollback()
 		return nil, nil
 	}
+	if err != nil {
+		tx.Rollback()
+		return nil, err
+	}
+
+	// Step 2: Mark as running
+	_, err = tx.Exec(
+		`UPDATE executions SET status='running', worker_id=?, start_time=NOW() WHERE id=?`,
+		workerID, execID,
+	)
 	if err != nil {
 		tx.Rollback()
 		return nil, err
