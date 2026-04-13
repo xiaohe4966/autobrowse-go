@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -24,16 +23,16 @@ func main() {
 	cfg := config.Load()
 
 	// 验证必要配置
-	if cfg.DBDSN == "" {
+	if cfg.DB.DSN == "" {
 		log.Fatal("DB DSN is required. Use --db flag or DB environment variable")
 	}
-	if cfg.JWTSecret == "" {
+	if cfg.JWT.Secret == "" {
 		log.Println("Warning: JWT_SECRET not set, using default (insecure for production)")
-		cfg.JWTSecret = "default-secret-change-in-production"
+		cfg.JWT.Secret = "default-secret-change-in-production"
 	}
 
 	// 初始化数据库连接
-	db, err := initDB(cfg.DBDSN)
+	db, err := initDB(cfg.DB.DSN)
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
@@ -42,7 +41,7 @@ func main() {
 	log.Println("Database connected successfully")
 
 	// 确保上传目录存在
-	if err := os.MkdirAll(cfg.UploadDir, 0755); err != nil {
+	if err := os.MkdirAll(cfg.Upload.Dir, 0755); err != nil {
 		log.Fatalf("Failed to create upload directory: %v", err)
 	}
 
@@ -69,7 +68,7 @@ func main() {
 
 		// 任务管理（需要认证）
 		r.Route("/tasks", func(r chi.Router) {
-			r.Use(authMiddleware(cfg.JWTSecret))
+			r.Use(authMiddleware(cfg.JWT.Secret))
 			r.Get("/", listTasksHandler(db))
 			r.Post("/", createTaskHandler(db))
 			r.Post("/import", importTaskHandler(db))
@@ -87,19 +86,19 @@ func main() {
 
 		// 执行记录（需要认证）
 		r.Route("/executions", func(r chi.Router) {
-			r.Use(authMiddleware(cfg.JWTSecret))
+			r.Use(authMiddleware(cfg.JWT.Secret))
 			r.Get("/", listExecutionsHandler(db))
 			r.Route("/{id}", func(r chi.Router) {
 				r.Get("/", getExecutionHandler(db))
-				r.Get("/screenshot", downloadScreenshotHandler(db, cfg.UploadDir))
-				r.Get("/source", downloadSourceHandler(db, cfg.UploadDir))
+				r.Get("/screenshot", downloadScreenshotHandler(db, cfg.Upload.Dir))
+				r.Get("/source", downloadSourceHandler(db, cfg.Upload.Dir))
 				r.Get("/stream", streamExecutionHandler(db))
 			})
 		})
 
 		// 任务模板（需要认证）
 		r.Route("/templates", func(r chi.Router) {
-			r.Use(authMiddleware(cfg.JWTSecret))
+			r.Use(authMiddleware(cfg.JWT.Secret))
 			r.Get("/", listTemplatesHandler(db))
 			r.Post("/", createTemplateHandler(db))
 			r.Route("/{id}", func(r chi.Router) {
@@ -116,11 +115,11 @@ func main() {
 			r.Get("/next-task", getNextTaskHandler(db))
 			r.Post("/task-result", submitTaskResultHandler(db))
 			r.Post("/task-progress", submitTaskProgressHandler(db))
-			r.Post("/upload-file", uploadFileHandler(cfg.UploadDir))
+			r.Post("/upload-file", uploadFileHandler(cfg.Upload.Dir))
 		})
 
 		// Worker 管理列表（需要用户认证）
-		r.With(authMiddleware(cfg.JWTSecret)).Get("/workers", listWorkersHandler(db))
+		r.With(authMiddleware(cfg.JWT.Secret)).Get("/workers", listWorkersHandler(db))
 	})
 
 	// 静态文件服务
@@ -130,7 +129,7 @@ func main() {
 
 	// 创建 HTTP 服务器
 	srv := &http.Server{
-		Addr:    ":" + cfg.Port,
+		Addr:    ":" + cfg.Server.Port,
 		Handler: r,
 	}
 
@@ -155,7 +154,7 @@ func main() {
 		cancel() // 停止调度器
 	}()
 
-	log.Printf("Server starting on port %s", cfg.Port)
+	log.Printf("Server starting on port %s", cfg.Server.Port)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("Server error: %v", err)
 	}
