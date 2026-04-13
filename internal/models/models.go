@@ -105,3 +105,13 @@ const (
 	ScheduleCron     = "cron"
 	ScheduleInterval = "interval"
 )
+
+// ExecutionFilter 过滤条件
+type ExecutionFilter struct {
+	TaskID         string
+	Status         string
+	StartTimeFrom  *time.Time
+	StartTimeTo    *time.Time
+	Limit          int
+	Offset         int
+}

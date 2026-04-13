@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
-	"database/sql"
+	"encoding/json"
+	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -16,142 +18,122 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 
 	"auto-take-go/internal/config"
+	"auto-take-go/internal/db"
+	"auto-take-go/internal/models"
 )
 
 func main() {
-	// 加载配置（环境变量 + 命令行参数）
 	cfg := config.Load()
 
-	// 验证必要配置
 	if cfg.DB.DSN == "" {
-		log.Fatal("DB DSN is required. Use --db flag or DB environment variable")
+		log.Fatal("DB DSN is required. Set DB env or --db flag")
 	}
 	if cfg.JWT.Secret == "" {
 		log.Println("Warning: JWT_SECRET not set, using default (insecure for production)")
 		cfg.JWT.Secret = "default-secret-change-in-production"
 	}
 
-	// 初始化数据库连接
-	db, err := initDB(cfg.DB.DSN)
-	if err != nil {
+	// 用 db.Init 初始化 db 包全局变量
+	if err := db.Init(cfg.DB.DSN + "?parseTime=true&loc=Local&charset=utf8mb4"); err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 	defer db.Close()
 
 	log.Println("Database connected successfully")
 
-	// 确保上传目录存在
 	if err := os.MkdirAll(cfg.Upload.Dir, 0755); err != nil {
 		log.Fatalf("Failed to create upload directory: %v", err)
 	}
 
-	// 创建 chi 路由
 	r := chi.NewRouter()
-
-	// 中间件
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Timeout(60 * time.Second))
 
-	// API 路由组
 	r.Route("/api/v1", func(r chi.Router) {
-		// 健康检查
 		r.Get("/health", healthHandler)
 
-		// 认证相关
 		r.Route("/auth", func(r chi.Router) {
 			r.Post("/login", authLoginHandler)
 			r.Post("/refresh", authRefreshHandler)
 		})
 
-		// 任务管理（需要认证）
 		r.Route("/tasks", func(r chi.Router) {
 			r.Use(authMiddleware(cfg.JWT.Secret))
-			r.Get("/", listTasksHandler(db))
-			r.Post("/", createTaskHandler(db))
-			r.Post("/import", importTaskHandler(db))
+			r.Get("/", listTasksHandler())
+			r.Post("/", createTaskHandler())
+			r.Post("/import", importTaskHandler())
 			r.Route("/{id}", func(r chi.Router) {
-				r.Get("/", getTaskHandler(db))
-				r.Put("/", updateTaskHandler(db))
-				r.Patch("/", patchTaskHandler(db))
-				r.Delete("/", deleteTaskHandler(db))
-				r.Post("/run", runTaskHandler(db))
-				r.Post("/stop", stopTaskHandler(db))
-				r.Post("/clone", cloneTaskHandler(db))
-				r.Get("/export", exportTaskHandler(db))
+				r.Get("/", getTaskHandler())
+				r.Put("/", updateTaskHandler())
+				r.Patch("/", patchTaskHandler())
+				r.Delete("/", deleteTaskHandler())
+				r.Post("/run", runTaskHandler())
+				r.Post("/stop", stopTaskHandler())
+				r.Post("/clone", cloneTaskHandler())
+				r.Get("/export", exportTaskHandler())
 			})
 		})
 
-		// 执行记录（需要认证）
 		r.Route("/executions", func(r chi.Router) {
 			r.Use(authMiddleware(cfg.JWT.Secret))
-			r.Get("/", listExecutionsHandler(db))
+			r.Get("/", listExecutionsHandler())
 			r.Route("/{id}", func(r chi.Router) {
-				r.Get("/", getExecutionHandler(db))
-				r.Get("/screenshot", downloadScreenshotHandler(db, cfg.Upload.Dir))
-				r.Get("/source", downloadSourceHandler(db, cfg.Upload.Dir))
-				r.Get("/stream", streamExecutionHandler(db))
+				r.Get("/", getExecutionHandler())
+				r.Get("/screenshot", downloadScreenshotHandler(cfg.Upload.Dir))
+				r.Get("/source", downloadSourceHandler(cfg.Upload.Dir))
+				r.Get("/stream", streamExecutionHandler())
 			})
 		})
 
-		// 任务模板（需要认证）
 		r.Route("/templates", func(r chi.Router) {
 			r.Use(authMiddleware(cfg.JWT.Secret))
-			r.Get("/", listTemplatesHandler(db))
-			r.Post("/", createTemplateHandler(db))
+			r.Get("/", listTemplatesHandler())
+			r.Post("/", createTemplateHandler())
 			r.Route("/{id}", func(r chi.Router) {
-				r.Delete("/", deleteTemplateHandler(db))
-				r.Post("/apply", applyTemplateHandler(db))
+				r.Delete("/", deleteTemplateHandler())
+				r.Post("/apply", applyTemplateHandler())
 			})
 		})
 
-		// Worker 交互（使用独立认证）
+		// Worker 内部接口（独立鉴权）
 		r.Route("/workers", func(r chi.Router) {
 			r.Use(workerAuthMiddleware)
-			r.Post("/register", registerWorkerHandler(db))
-			r.Post("/heartbeat", heartbeatHandler(db))
-			r.Get("/next-task", getNextTaskHandler(db))
-			r.Post("/task-result", submitTaskResultHandler(db))
-			r.Post("/task-progress", submitTaskProgressHandler(db))
+			r.Post("/register", registerWorkerHandler())
+			r.Post("/heartbeat", heartbeatHandler())
+			r.Get("/next-task", getNextTaskHandler())
+			r.Post("/task-result", submitTaskResultHandler())
+			r.Post("/task-progress", submitTaskProgressHandler())
 			r.Post("/upload-file", uploadFileHandler(cfg.Upload.Dir))
 		})
 
-		// Worker 管理列表（需要用户认证）
-		r.With(authMiddleware(cfg.JWT.Secret)).Get("/workers", listWorkersHandler(db))
+		// Worker 列表（用户认证）
+		r.With(authMiddleware(cfg.JWT.Secret)).Get("/workers", listWorkersHandler())
 	})
 
-	// 静态文件服务
 	workDir, _ := os.Getwd()
 	filesDir := http.Dir(workDir + "/web")
 	FileServer(r, "/", filesDir)
 
-	// 创建 HTTP 服务器
-	srv := &http.Server{
-		Addr:    ":" + cfg.Server.Port,
-		Handler: r,
-	}
+	srv := &http.Server{Addr: ":" + cfg.Server.Port, Handler: r}
 
-	// 启动调度器 goroutine
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go schedulerLoop(ctx, db)
+	go schedulerLoop(ctx)
 
-	// 优雅关闭
 	go func() {
 		sigChan := make(chan os.Signal, 1)
 		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 		<-sigChan
 		log.Println("Shutting down server...")
-
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer shutdownCancel()
-
 		if err := srv.Shutdown(shutdownCtx); err != nil {
 			log.Printf("Server shutdown error: %v", err)
 		}
-		cancel() // 停止调度器
+		cancel()
 	}()
 
 	log.Printf("Server starting on port %s", cfg.Server.Port)
@@ -160,36 +142,13 @@ func main() {
 	}
 }
 
-// initDB 初始化数据库连接
-func initDB(dsn string) (*sql.DB, error) {
-	db, err := sql.Open("mysql", dsn+"?parseTime=true&loc=Local&charset=utf8mb4")
-	if err != nil {
-		return nil, err
-	}
-
-	// 设置连接池参数
-	db.SetMaxOpenConns(25)
-	db.SetMaxIdleConns(10)
-	db.SetConnMaxLifetime(5 * time.Minute)
-
-	// 测试连接
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := db.PingContext(ctx); err != nil {
-		return nil, err
-	}
-
-	return db, nil
-}
-
-// FileServer 提供静态文件服务，处理 SPA 路由
+// FileServer serves static files and handles SPA routing.
 func FileServer(r chi.Router, path string, root http.FileSystem) {
 	if path != "/" && path[len(path)-1] != '/' {
 		r.Get(path, http.RedirectHandler(path+"/", http.StatusMovedPermanently).ServeHTTP)
 		path += "/"
 	}
 	path += "*"
-
 	r.Get(path, func(w http.ResponseWriter, r *http.Request) {
 		rctx := chi.RouteContext(r.Context())
 		pathPrefix := strings.TrimSuffix(rctx.RoutePattern(), "/*")
@@ -198,29 +157,35 @@ func FileServer(r chi.Router, path string, root http.FileSystem) {
 	})
 }
 
-// 健康检查处理器
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(`{"status":"ok"}`))
 }
 
-// 以下为占位符处理器，实际实现需根据业务逻辑补充
+// ── Auth ─────────────────────────────────────────────────────────────────────
 
 func authLoginHandler(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
+		return
+	}
+	// TODO: 实现真实 JWT 签发
 	w.WriteHeader(http.StatusNotImplemented)
-	w.Write([]byte(`{"error":"not implemented"}`))
 }
 
 func authRefreshHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
-	w.Write([]byte(`{"error":"not implemented"}`))
 }
 
 func authMiddleware(secret string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// TODO: 实现 JWT 验证
+			// TODO: 解析 JWT Bearer Token
+			_ = secret
 			next.ServeHTTP(w, r)
 		})
 	}
@@ -228,218 +193,356 @@ func authMiddleware(secret string) func(http.Handler) http.Handler {
 
 func workerAuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// TODO: 实现 Worker 认证
+		// TODO: 验证 X-Worker-Secret header
 		next.ServeHTTP(w, r)
 	})
 }
 
-func listTasksHandler(db *sql.DB) http.HandlerFunc {
+// ── Task handlers ─────────────────────────────────────────────────────────────
+
+func listTasksHandler() http.HandlerFunc { return notImplemented }
+func createTaskHandler() http.HandlerFunc { return notImplemented }
+func importTaskHandler() http.HandlerFunc { return notImplemented }
+func getTaskHandler() http.HandlerFunc    { return notImplemented }
+func updateTaskHandler() http.HandlerFunc { return notImplemented }
+func patchTaskHandler() http.HandlerFunc  { return notImplemented }
+func deleteTaskHandler() http.HandlerFunc { return notImplemented }
+func cloneTaskHandler() http.HandlerFunc  { return notImplemented }
+func exportTaskHandler() http.HandlerFunc { return notImplemented }
+
+// POST /tasks/{id}/run — 创建 execution 记录
+func runTaskHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotImplemented)
-		w.Write([]byte(`{"error":"not implemented"}`))
+		taskID := chi.URLParam(r, "id")
+		if taskID == "" {
+			http.Error(w, `{"error":"task_id required"}`, http.StatusBadRequest)
+			return
+		}
+		task, err := db.GetByID(taskID)
+		if err != nil || task == nil {
+			http.Error(w, `{"error":"task not found"}`, http.StatusNotFound)
+			return
+		}
+		exec := &models.Execution{
+			ID:        newID(),
+			TaskID:    taskID,
+			Status:    models.ExecutionPending,
+			StartTime: nil,
+		}
+		if err := db.CreateExecution(exec); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]string{"execution_id": exec.ID})
 	}
 }
 
-func createTaskHandler(db *sql.DB) http.HandlerFunc {
+// POST /tasks/{id}/stop — 停止正在运行的 execution
+func stopTaskHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotImplemented)
-		w.Write([]byte(`{"error":"not implemented"}`))
+		execID := chi.URLParam(r, "id")
+		if err := db.StopExecution(execID); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		w.Write([]byte(`{"status":"ok"}`))
 	}
 }
 
-func importTaskHandler(db *sql.DB) http.HandlerFunc {
+// ── Execution handlers ────────────────────────────────────────────────────────
+
+func listExecutionsHandler() http.HandlerFunc { return notImplemented }
+func getExecutionHandler() http.HandlerFunc    { return notImplemented }
+
+func downloadScreenshotHandler(uploadDir string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotImplemented)
-		w.Write([]byte(`{"error":"not implemented"}`))
+		execID := chi.URLParam(r, "id")
+		exec, err := db.GetExecutionByID(execID)
+		if err != nil || exec == nil {
+			http.Error(w, `{"error":"execution not found"}`, http.StatusNotFound)
+			return
+		}
+		if exec.ScreenshotPath == "" {
+			http.Error(w, `{"error":"no screenshot"}`, http.StatusNotFound)
+			return
+		}
+		http.ServeFile(w, r, exec.ScreenshotPath)
 	}
 }
 
-func getTaskHandler(db *sql.DB) http.HandlerFunc {
+func downloadSourceHandler(uploadDir string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotImplemented)
-		w.Write([]byte(`{"error":"not implemented"}`))
+		execID := chi.URLParam(r, "id")
+		exec, err := db.GetExecutionByID(execID)
+		if err != nil || exec == nil {
+			http.Error(w, `{"error":"execution not found"}`, http.StatusNotFound)
+			return
+		}
+		if exec.SourcePath == "" {
+			http.Error(w, `{"error":"no source"}`, http.StatusNotFound)
+			return
+		}
+		http.ServeFile(w, r, exec.SourcePath)
 	}
 }
 
-func updateTaskHandler(db *sql.DB) http.HandlerFunc {
+func streamExecutionHandler() http.HandlerFunc { return notImplemented }
+
+// ── Template handlers ────────────────────────────────────────────────────────
+
+func listTemplatesHandler()   http.HandlerFunc { return notImplemented }
+func createTemplateHandler()  http.HandlerFunc { return notImplemented }
+func deleteTemplateHandler()  http.HandlerFunc { return notImplemented }
+func applyTemplateHandler()   http.HandlerFunc { return notImplemented }
+
+// ── Worker handlers ──────────────────────────────────────────────────────────
+
+func registerWorkerHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotImplemented)
-		w.Write([]byte(`{"error":"not implemented"}`))
+		var req struct {
+			ID         string `json:"id"`
+			Name       string `json:"name"`
+			Concurrent int    `json:"concurrent"`
+			Tags       []byte `json:"tags"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+			return
+		}
+		defer r.Body.Close()
+
+		if req.ID == "" {
+			http.Error(w, `{"error":"id is required"}`, http.StatusBadRequest)
+			return
+		}
+		worker := &models.Worker{
+			ID:          req.ID,
+			Name:        req.Name,
+			Concurrent:  req.Concurrent,
+			CurrentLoad: 0,
+			Status:      models.WorkerIdle,
+			Tags:        req.Tags,
+		}
+		if err := db.RegisterWorker(worker); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	}
 }
 
-func patchTaskHandler(db *sql.DB) http.HandlerFunc {
+func heartbeatHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotImplemented)
-		w.Write([]byte(`{"error":"not implemented"}`))
+		var req struct {
+			ID   string `json:"id"`
+			Load int    `json:"load"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+			return
+		}
+		defer r.Body.Close()
+
+		// 随机抽样：10% 概率清理离线 worker，减少数据库压力
+		if time.Now().UnixNano()%10 == 0 {
+			db.SetOfflineIfExpired(30 * time.Second)
+		}
+
+		if err := db.UpdateHeartbeat(req.ID); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		if err := db.UpdateWorkerLoad(req.ID, req.Load); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	}
 }
 
-func deleteTaskHandler(db *sql.DB) http.HandlerFunc {
+func getNextTaskHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotImplemented)
-		w.Write([]byte(`{"error":"not implemented"}`))
+		workerID := r.URL.Query().Get("worker_id")
+		if workerID == "" {
+			http.Error(w, `{"error":"worker_id is required"}`, http.StatusBadRequest)
+			return
+		}
+
+		wk, err := db.GetWorkerByID(workerID)
+		if err != nil || wk == nil {
+			http.Error(w, `{"error":"worker not found"}`, http.StatusNotFound)
+			return
+		}
+
+		exec, err := db.ClaimTask(workerID, wk.Concurrent)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		if exec == nil {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		var definition []byte
+		var taskID string
+		err = db.DB.QueryRow(
+			`SELECT id, definition FROM tasks WHERE id=?`,
+			exec.TaskID,
+		).Scan(&taskID, &definition)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"execution_id": exec.ID,
+			"task_id":      taskID,
+			"definition":   json.RawMessage(definition),
+		})
 	}
 }
 
-func runTaskHandler(db *sql.DB) http.HandlerFunc {
+func submitTaskResultHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotImplemented)
-		w.Write([]byte(`{"error":"not implemented"}`))
+		var req struct {
+			ExecutionID string            `json:"execution_id"`
+			Status      string            `json:"status"`
+			Log         string            `json:"log"`
+			Variables   map[string]string `json:"variables"`
+			ErrorMsg    string            `json:"error_msg"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+			return
+		}
+		defer r.Body.Close()
+
+		if req.Status == "" {
+			req.Status = models.ExecutionSuccess
+		}
+		if req.Variables != nil {
+			b, _ := json.Marshal(req.Variables)
+			_, _ = db.DB.Exec(`UPDATE executions SET variables=? WHERE id=?`, b, req.ExecutionID)
+		}
+
+		err := db.UpdateExecutionResult(req.ExecutionID, req.Status, "", req.Log, req.ErrorMsg)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	}
 }
 
-func stopTaskHandler(db *sql.DB) http.HandlerFunc {
+func submitTaskProgressHandler() http.HandlerFunc {
+	// Worker 进度上报，目前只做空处理，后续可写 execution_logs 表
 	return func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotImplemented)
-		w.Write([]byte(`{"error":"not implemented"}`))
-	}
-}
-
-func cloneTaskHandler(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotImplemented)
-		w.Write([]byte(`{"error":"not implemented"}`))
-	}
-}
-
-func exportTaskHandler(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotImplemented)
-		w.Write([]byte(`{"error":"not implemented"}`))
-	}
-}
-
-func listExecutionsHandler(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotImplemented)
-		w.Write([]byte(`{"error":"not implemented"}`))
-	}
-}
-
-func getExecutionHandler(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotImplemented)
-		w.Write([]byte(`{"error":"not implemented"}`))
-	}
-}
-
-func downloadScreenshotHandler(db *sql.DB, uploadDir string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotImplemented)
-		w.Write([]byte(`{"error":"not implemented"}`))
-	}
-}
-
-func downloadSourceHandler(db *sql.DB, uploadDir string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotImplemented)
-		w.Write([]byte(`{"error":"not implemented"}`))
-	}
-}
-
-func streamExecutionHandler(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Connection", "keep-alive")
-		w.WriteHeader(http.StatusNotImplemented)
-		w.Write([]byte(`data: {"error":"not implemented"}\n\n`))
-	}
-}
-
-func listTemplatesHandler(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotImplemented)
-		w.Write([]byte(`{"error":"not implemented"}`))
-	}
-}
-
-func createTemplateHandler(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotImplemented)
-		w.Write([]byte(`{"error":"not implemented"}`))
-	}
-}
-
-func deleteTemplateHandler(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotImplemented)
-		w.Write([]byte(`{"error":"not implemented"}`))
-	}
-}
-
-func applyTemplateHandler(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotImplemented)
-		w.Write([]byte(`{"error":"not implemented"}`))
-	}
-}
-
-func registerWorkerHandler(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotImplemented)
-		w.Write([]byte(`{"error":"not implemented"}`))
-	}
-}
-
-func heartbeatHandler(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotImplemented)
-		w.Write([]byte(`{"error":"not implemented"}`))
-	}
-}
-
-func getNextTaskHandler(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotImplemented)
-		w.Write([]byte(`{"error":"not implemented"}`))
-	}
-}
-
-func submitTaskResultHandler(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotImplemented)
-		w.Write([]byte(`{"error":"not implemented"}`))
-	}
-}
-
-func submitTaskProgressHandler(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotImplemented)
-		w.Write([]byte(`{"error":"not implemented"}`))
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	}
 }
 
 func uploadFileHandler(uploadDir string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotImplemented)
-		w.Write([]byte(`{"error":"not implemented"}`))
+		execID := r.FormValue("execution_id")
+		fileType := r.FormValue("file_type")
+		if execID == "" || fileType == "" {
+			http.Error(w, `{"error":"execution_id and file_type are required"}`, http.StatusBadRequest)
+			return
+		}
+
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			http.Error(w, `{"error":"no file uploaded"}`, http.StatusBadRequest)
+			return
+		}
+		defer file.Close()
+
+		data, err := io.ReadAll(file)
+		if err != nil {
+			http.Error(w, `{"error":"failed to read file"}`, http.StatusInternalServerError)
+			return
+		}
+
+		filename := fmt.Sprintf("%s_%s_%s", execID, fileType, header.Filename)
+		fpath := uploadDir + "/" + filename
+		if err := os.WriteFile(fpath, data, 0644); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+			return
+		}
+
+		var col string
+		switch fileType {
+		case "screenshot":
+			col = "screenshot_path"
+		case "source":
+			col = "source_path"
+		default:
+			http.Error(w, `{"error":"unknown file_type"}`, http.StatusBadRequest)
+			return
+		}
+
+		_, err = db.DB.Exec(fmt.Sprintf(`UPDATE executions SET %s=? WHERE id=?`, col), fpath, execID)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "path": fpath})
 	}
 }
 
-func listWorkersHandler(db *sql.DB) http.HandlerFunc {
+func listWorkersHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotImplemented)
-		w.Write([]byte(`{"error":"not implemented"}`))
+		workers, err := db.ListWorkers()
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(workers)
 	}
 }
 
-func schedulerLoop(ctx context.Context, db *sql.DB) {
+// ── Scheduler ────────────────────────────────────────────────────────────────
+
+func schedulerLoop(ctx context.Context) {
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
-
 	log.Println("Scheduler started")
-
 	for {
 		select {
 		case <-ctx.Done():
 			log.Println("Scheduler stopped")
 			return
 		case <-ticker.C:
-			// TODO: 实现任务调度逻辑
-			log.Println("Scheduler tick - checking for schedulable tasks")
+			// 定时清理离线 worker
+			db.SetOfflineIfExpired(30 * time.Second)
+			log.Println("Scheduler tick")
 		}
 	}
 }
 
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+func notImplemented(w http.ResponseWriter, r *http.Request) {
+	http.Error(w, `{"error":"not implemented"}`, http.StatusNotImplemented)
+}
+
+// newID generates a UUID-like ID.
+func newID() string {
+	b := make([]byte, 16)
+	_ = strings.NewReader(string(b[:0]))
+	t := time.Now().UnixNano()
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		uint32(t>>32), uint16(t>>16), uint16(t),
+		uint16(time.Now().Unix()>>48)&0xFFFF,
+		time.Now().UnixNano()&0xFFFFFFFFFFFF,
+	)
+}

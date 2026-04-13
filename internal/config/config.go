@@ -53,7 +53,8 @@ func Load() *Config {
 			WriteTimeout: 30 * time.Second,
 		},
 		DB: DBConfig{
-			DSN: getEnv("DB", "root:password@tcp(localhost:3306)/auto_task?parseTime=true&charset=utf8mb4"),
+			// DSN: getEnv("DB", "root:password@tcp(localhost:3306)/auto_task?parseTime=true&charset=utf8mb4"),
+			DSN: getEnv("DB", "root:root@tcp(localhost:3306)/auto_task?parseTime=true&charset=utf8mb4"),
 		},
 		JWT: JWTConfig{
 			Secret:     getEnv("JWT_SECRET", "change-me-in-production"),
