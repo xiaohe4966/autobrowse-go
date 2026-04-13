@@ -33,7 +33,6 @@ type ScheduleConfig struct {
 	CronExpr   string `json:"cronExpr,omitempty"`
 	IntervalMs int64  `json:"intervalMs,omitempty"`
 	JitterSec  int    `json:"jitterSec,omitempty"`
-	Retry      *Retry `json:"retry,omitempty"`
 }
 
 // GetJitterSec 获取 jitter 秒数，默认 60
@@ -42,57 +41,6 @@ func (c *ScheduleConfig) GetJitterSec() int {
 		return 60
 	}
 	return c.JitterSec
-}
-
-// Retry 重试配置
-type Retry struct {
-	MaxAttempts int      `json:"maxAttempts"`
-	DelaySec    int      `json:"delaySec"`
-	OnErrors    []string `json:"onErrors"`
-}
-
-// TaskDefinition 任务定义结构
-type TaskDefinition struct {
-	Steps     []Step      `json:"steps"`
-	Retry     *Retry      `json:"retry,omitempty"`
-	OnFailure *OnFailure  `json:"onFailure,omitempty"`
-}
-
-// OnFailure 失败处理配置
-type OnFailure struct {
-	Screenshot   bool `json:"screenshot"`
-	LogVariables bool `json:"logVariables"`
-}
-
-// Step 步骤定义
-type Step struct {
-	Type        string          `json:"type"`
-	URL         string          `json:"url,omitempty"`
-	Selector    string          `json:"selector,omitempty"`
-	Text        string          `json:"text,omitempty"`
-	Var         string          `json:"var,omitempty"`
-	Attr        string          `json:"attr,omitempty"`
-	Message     string          `json:"message,omitempty"`
-	Path        string          `json:"path,omitempty"`
-	FullPage    bool            `json:"fullPage,omitempty"`
-	TimeoutSec  int             `json:"timeoutSec,omitempty"`
-	Sec         int             `json:"sec,omitempty"`
-	MinSec      int             `json:"minSec,omitempty"`
-	MaxSec      int             `json:"maxSec,omitempty"`
-	CharDelayMs int             `json:"charDelayMs,omitempty"`
-	Clear       bool            `json:"clear,omitempty"`
-	Count       int             `json:"count,omitempty"`
-	If          *Condition      `json:"if,omitempty"`
-	Then        []Step          `json:"then,omitempty"`
-	Else        []Step          `json:"else,omitempty"`
-	Until       *Condition      `json:"until,omitempty"`
-}
-
-// Condition 条件
-type Condition struct {
-	Type     string `json:"type"`
-	Selector string `json:"selector,omitempty"`
-	Text     string `json:"text,omitempty"`
 }
 
 // Execution 执行实例
@@ -136,12 +84,12 @@ type TaskTemplate struct {
 
 // ExecutionStatus 执行状态常量
 const (
-	ExecutionPending  = "pending"
-	ExecutionRunning  = "running"
-	ExecutionSuccess  = "success"
-	ExecutionFailed   = "failed"
-	ExecutionStopped  = "stopped"
-	ExecutionRetry    = "retry"
+	ExecutionPending = "pending"
+	ExecutionRunning = "running"
+	ExecutionSuccess = "success"
+	ExecutionFailed  = "failed"
+	ExecutionStopped = "stopped"
+	ExecutionRetry   = "retry"
 )
 
 // WorkerStatus Worker 状态常量

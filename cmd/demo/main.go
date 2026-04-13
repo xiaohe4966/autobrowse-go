@@ -125,7 +125,7 @@ func main() {
 	fmt.Println("\n" + repeatStr("=", 50))
 	fmt.Println("📍 额外测试: 百度搜索")
 
-	page.MustNavigate("https://www.baidu.com")
+	page.MustNavigate("https://www.baidu.com/s?wd=he4966.cn")
 	page.MustWaitLoad()
 
 	// 设置百度测试 cookie
@@ -134,12 +134,19 @@ func main() {
 	})
 
 	fmt.Println("\n📍 输入搜索关键词")
-	page.MustElement("#kw").MustInput("Go rod 浏览器自动化")
-	page.MustElement("#su").MustClick()
-	fmt.Println("   ✅ 已点击搜索")
+	page.MustNavigate("https://www.baidu.com/s?wd=he4966.cn")
+	// page.MustElement("#kw").MustInput("Go rod 浏览器自动化")
+	// page.MustElement("#su").MustClick()
+	// fmt.Println("   ✅ 已点击搜索")
 
 	time.Sleep(2 * time.Second)
 	page.MustWaitLoad()
+
+	// 截图
+	fmt.Println("\n📍 保存baidu截图")
+	screenshotPath = "./tmp/baidu.png"
+	page.MustScreenshot(screenshotPath)
+	fmt.Printf("   ✅ baidu截图已保存: %s\n", screenshotPath)
 
 	// 提取结果
 	firstResult := page.MustElement("#content_left .result:first-child h3")
@@ -147,7 +154,7 @@ func main() {
 	fmt.Printf("   ✅ 第一个结果: %s\n", title)
 
 	// 截图
-	baiduScreenshot := "/tmp/baidu_demo.png"
+	baiduScreenshot := "./tmp/baidu_demo.png"
 	page.MustScreenshot(baiduScreenshot)
 	fmt.Printf("   ✅ 截图: %s\n", baiduScreenshot)
 

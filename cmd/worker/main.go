@@ -14,7 +14,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"auto-take-go/internal/models"
 )
+
+// TaskDefinition 是 models.TaskDefinition 的别名
+type TaskDefinition = models.TaskDefinition
 
 func main() {
 	server := flag.String("server", "http://localhost:8099", "Server URL")
@@ -37,7 +42,7 @@ func main() {
 
 	// Default name
 	if *name == "" {
-		*name = "worker-" + *id[:8]
+		*name = "worker-" + (*id)[:8]
 	}
 
 	// Parse tags
