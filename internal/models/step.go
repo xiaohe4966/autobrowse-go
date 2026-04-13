@@ -6,6 +6,12 @@ import (
 
 // Step 代表一个动作步骤，定义所有支持的步骤类型
 // 对应 definition JSON 中的单个步骤对象
+//
+// 支持的步骤类型:
+//   - open: 打开网页（支持自定义 URL/Cookie/Headers）
+//   - click/input/delay/waitSelector/hasText/extract/log/condition/loop/screenshot/getSource/js
+//   - setCookie: 设置 Cookie（独立步骤，可与 open 配合）
+//   - setHeader: 设置请求头（独立步骤，通过 JS 拦截实现）
 type Step struct {
 	// ---- 通用字段 ----
 	// Type 步骤类型: open | click | input | delay | waitSelector | hasText |
@@ -80,6 +86,32 @@ type Step struct {
 
 	// ---- js: 执行自定义 JavaScript ----
 	Script string `json:"script,omitempty"`
+
+	// ---- setCookie: 设置 Cookie ----
+	// Cookies 要设置的 cookie 列表
+	Cookies []Cookie `json:"cookies,omitempty"`
+
+	// ---- setHeader: 设置请求头 ----
+	// Headers 要设置的请求头列表
+	Headers []Header `json:"headers,omitempty"`
+}
+
+// Cookie 定义
+type Cookie struct {
+	Name     string `json:"name"`
+	Value    string `json:"value"`
+	Domain   string `json:"domain,omitempty"`
+	Path     string `json:"path,omitempty"`
+	Expires  int64  `json:"expires,omitempty"` // Unix timestamp
+	HTTPOnly bool   `json:"httpOnly,omitempty"`
+	Secure   bool   `json:"secure,omitempty"`
+	SameSite string `json:"sameSite,omitempty"` // Strict, Lax, None
+}
+
+// Header 定义
+type Header struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
 }
 
 // GetText 返回步骤中的文本内容，兼容 Text 和 Text2 两个字段
@@ -140,6 +172,8 @@ func (s *Step) Validate() error {
 		"screenshot":   true,
 		"getSource":    true,
 		"js":           true,
+		"setCookie":    true,
+		"setHeader":    true,
 	}
 	if !validTypes[s.Type] {
 		return &StepValidationError{Field: "type", Message: "unsupported step type: " + s.Type}
